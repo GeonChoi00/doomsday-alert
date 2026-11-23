@@ -35,7 +35,10 @@ import requests
 # [사용자 설정] ― 여기만 고치면 됩니다
 # ════════════════════════════════════════════════════════════════════
 
-MOVIE_KEYWORD = "둠스데이"        # 영화 제목에 이 단어가 들어가면 감지
+# 영화 제목에 아래 단어 중 하나라도 들어가면 감지.
+# 띄어쓰기·대소문자·기호(: - 등)는 무시하고 비교하므로
+#   "어벤져스: 둠스데이", "어벤져스 둠스데이", "둠스 데이", "Avengers: Doomsday", "DOOMSDAY" 모두 잡힘
+MOVIE_KEYWORDS = ["둠스데이", "doomsday", "dooms day"]
 
 DATE_START = "2026-12-16"          # 감시 시작 날짜 (포함)
 DATE_END = "2026-12-20"            # 감시 끝 날짜 (포함)
@@ -81,7 +84,7 @@ STATE_FILE = "sent_state.json"   # 알림 보낸 기록 (중복 알림 방지)
 
 # ════════════════════════════════════════════════════════════════════
 # (아래는 고칠 필요 없음) 환경변수로 덮어쓰기 ― 테스트용
-#   MOVIE_KEYWORD, DATE_START, DATE_END, MIN_START_TIME,
+#   MOVIE_KEYWORD(쉼표로 여러 개 가능), DATE_START, DATE_END, MIN_START_TIME,
 #   DRY_RUN=1 (텔레그램 대신 화면 출력), NO_STATE=1 (기록 파일 안 씀),
 #   LOOP_SECONDS, CHECK_INTERVAL, PING=1 (텔레그램 연결 테스트 메시지만 전송)
 # ════════════════════════════════════════════════════════════════════
@@ -91,7 +94,21 @@ def _env(name: str, default: str) -> str:
     return v if v else default
 
 
-MOVIE_KEYWORD = _env("MOVIE_KEYWORD", MOVIE_KEYWORD)
+if os.environ.get("MOVIE_KEYWORD", "").strip():
+    MOVIE_KEYWORDS = [k for k in os.environ["MOVIE_KEYWORD"].split(",") if k.strip()]
+
+
+def _norm(text: str) -> str:
+    """비교용: 소문자로 바꾸고 글자·숫자 말고 전부(공백, :, -, · 등) 제거."""
+    return "".join(ch for ch in (text or "").lower() if ch.isalnum())
+
+
+_KEYS = [_norm(k) for k in MOVIE_KEYWORDS if _norm(k)]
+
+
+def title_matches(title: str) -> bool:
+    t = _norm(title)
+    return any(k in t for k in _KEYS)
 DATE_START = _env("DATE_START", DATE_START)
 DATE_END = _env("DATE_END", DATE_END)
 MIN_START_TIME = _env("MIN_START_TIME", MIN_START_TIME)
@@ -244,7 +261,7 @@ def check_cgv_imax(theater: dict, dates: list[str]) -> list[Show]:
     shows: list[Show] = []
     for mv in movies:
         name = mv.get("name") or ""
-        if MOVIE_KEYWORD not in name or mv.get("date") not in want:
+        if not title_matches(name) or mv.get("date") not in want:
             continue
         for hall in mv.get("scheduleList") or []:
             hall_name = hall.get("theaterName") or ""
@@ -309,7 +326,7 @@ def check_megabox(theater: dict, dates: list[str]) -> list[Show]:
 
         for row in rows:
             name = html.unescape(row.get("movieNm") or row.get("rpstMovieNm") or "")
-            if MOVIE_KEYWORD not in name:
+            if not title_matches(name):
                 continue
             kind = (row.get("theabKindCd") or "").upper()
             if kind not in theater["halls"]:
@@ -504,7 +521,7 @@ def main() -> int:
         log(f"감시 기간({DATE_START}~{DATE_END})이 지났습니다. 워크플로를 꺼 주세요.")
         return 0
 
-    log(f"감시 시작: '{MOVIE_KEYWORD}' / {DATE_START}~{DATE_END} / {MIN_START_TIME} 이후"
+    log(f"감시 시작: {MOVIE_KEYWORDS} / {DATE_START}~{DATE_END} / {MIN_START_TIME} 이후"
         f"{' / DRY_RUN' if DRY_RUN else ''}{' / NO_STATE' if NO_STATE else ''}")
     state = load_state()
     fail_counter: dict[str, int] = {}

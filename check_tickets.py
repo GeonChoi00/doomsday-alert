@@ -57,12 +57,20 @@ CGV_IMAX_THEATERS = [
 ]
 
 # ── 2순위: 메가박스 돌비 ──────────────────────────────────────────
-#   hall     : "DBC" = 돌비 시네마(정식)  /  "DVA" = 돌비 비전+애트모스관(일반 돌비관, 돌비 시네마 아님)
+#   halls    : 감지할 상영관 종류.  "DBC" = 돌비 시네마(정식)
+#                                   "DVA" = 돌비 비전+애트모스관(일반 돌비관, 돌비 시네마 아님)
+#              둘 다 넣으면 어느 쪽이 열려도 알림 (알림 태그는 실제 열린 관 종류로 붙음)
 #   brch_no  : 메가박스 지점번호
+D = ["DBC", "DVA"]
 MEGABOX_THEATERS = [
-    {"name": "메가박스 코엑스",       "brch_no": "1351", "hall": "DBC", "enabled": True, "min_time": None},
-    {"name": "메가박스 구의이스트폴", "brch_no": "0090", "hall": "DVA", "enabled": True, "min_time": None},
-    # 지점 추가 예시 (수도권 돌비 시네마):  하남스타필드 brch_no "4651" / 남양주 스페이스원 "0019"
+    {"name": "메가박스 코엑스",           "brch_no": "1351", "halls": D, "enabled": True, "min_time": None},  # 돌비 시네마
+    {"name": "메가박스 구의이스트폴",     "brch_no": "0090", "halls": D, "enabled": True, "min_time": None},  # 돌비 비전+애트모스
+    {"name": "메가박스 목동",             "brch_no": "1581", "halls": D, "enabled": True, "min_time": None},  # 돌비 비전+애트모스
+    {"name": "메가박스 상암월드컵경기장", "brch_no": "1211", "halls": D, "enabled": True, "min_time": None},  # 돌비 비전+애트모스
+    {"name": "메가박스 센트럴",           "brch_no": "1371", "halls": D, "enabled": True, "min_time": None},  # 11월 기준 돌비 회차 없음
+    {"name": "메가박스 하남스타필드",     "brch_no": "4651", "halls": D, "enabled": True, "min_time": None},  # 돌비 시네마
+    {"name": "메가박스 수원스타필드",     "brch_no": "0062", "halls": D, "enabled": True, "min_time": None},  # 돌비 비전+애트모스
+    # 지점 추가 예시 (돌비 시네마):  수원AK플라자 "0052" / 남양주 스페이스원 "0019" / 송도 "4062"
 ]
 
 # ── 실행 방식 ─────────────────────────────────────────────────────
@@ -303,7 +311,8 @@ def check_megabox(theater: dict, dates: list[str]) -> list[Show]:
             name = html.unescape(row.get("movieNm") or row.get("rpstMovieNm") or "")
             if MOVIE_KEYWORD not in name:
                 continue
-            if (row.get("theabKindCd") or "").upper() != theater["hall"]:
+            kind = (row.get("theabKindCd") or "").upper()
+            if kind not in theater["halls"]:
                 continue
             if row.get("bokdAbleAt") not in (None, "Y"):     # 예매 불가(매진/마감)
                 continue
@@ -314,7 +323,7 @@ def check_megabox(theater: dict, dates: list[str]) -> list[Show]:
             rest, tot = row.get("restSeatCnt"), row.get("totSeatCnt")
             seats = f"잔여 {rest}/{tot}석" if rest is not None and tot else ""
             url = f"https://www.megabox.co.kr/theater/time?brchNo={brch}"
-            shows.append(Show(theater["hall"], theater["name"], d, start, name,
+            shows.append(Show(kind, theater["name"], d, start, name,
                               hall=html.unescape(row.get("theabExpoNm") or ""),
                               link=url, book_url=url, seats=seats, min_label=min_label))
 
@@ -439,10 +448,10 @@ def run_check(state: dict, fail_counter: dict) -> None:
             shows = check_megabox(th, dates)
             found += shows
             fail_counter[src] = 0
-            log(f" [{th['hall']}] {th['name']}: 저녁 회차 {len(shows)}개")
+            log(f" [돌비] {th['name']}: 저녁 회차 {len(shows)}개")
         except Exception as e:  # noqa: BLE001
             fail_counter[src] = fail_counter.get(src, 0) + 1
-            log(f" [{th['hall']}] {th['name']}: 조회 실패 → {type(e).__name__}: {e}")
+            log(f" [돌비] {th['name']}: 조회 실패 → {type(e).__name__}: {e}")
 
     # ── 새 회차만 골라 알림 ──
     sent = state["sent"]

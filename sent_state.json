@@ -1,4 +1,9 @@
 {
-  "fail_since": {},
+  "fail_since": {
+    "CGV:CGV 압구정": {
+      "alerted": false,
+      "since": "2026-11-24T17:13:38+09:00"
+    }
+  },
   "sent": {}
 }

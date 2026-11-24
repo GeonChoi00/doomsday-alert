@@ -45,6 +45,7 @@ DATE_END = "2026-12-20"            # 감시 끝 날짜 (포함)
 
 MIN_START_TIME = "18:00"           # 이 시간 '이상'에 시작하는 회차만 알림 (예: "18:30", "19:00")
                                    # 지점별로 다르게 하고 싶으면 아래 목록의 "min_time"을 쓰세요.
+WEEKEND_NO_TIME_LIMIT = True       # True: 토·일 상영 회차는 시간 제한 없이 전부 알림 (12/19 토, 12/20 일)
 
 # ── 1순위: CGV IMAX (서울 IMAX 5곳 전부) ───────────────────────────
 #   enabled  : False로 바꾸면 그 지점은 조회 안 함
@@ -57,6 +58,16 @@ CGV_IMAX_THEATERS = [
     {"name": "CGV 압구정",         "site_no": "0040", "naver_id": "12197890", "enabled": True, "min_time": None},
     {"name": "CGV 천호",           "site_no": "0199", "naver_id": "36877562", "enabled": True, "min_time": None},
     {"name": "CGV 영등포",         "site_no": "0059", "naver_id": "13141635", "enabled": True, "min_time": None},
+]
+
+# ── CGV 프라이빗 박스 ───────────────────────────────────────────────
+#   hall_keyword : 상영관 이름에 이 글자가 들어가면 프라이빗 박스 상영관으로 감지
+#   ※ CGV 압구정은 IMAX관 안에 프라이빗 박스(5개)가 있어서, 위 IMAX 알림에 같이 포함돼요.
+CGV_PRIVATE_THEATERS = [
+    {"name": "CGV 영등포", "site_no": "0059", "naver_id": "13141635", "hall_keyword": "PRIVATE BOX",
+     "enabled": True, "min_time": None},   # 'SCREENX관 (리클라이너) with PRIVATE BOX'
+    {"name": "CGV 연남",   "site_no": "0292", "naver_id": "1256468787", "hall_keyword": "SUITE CINEMA",
+     "enabled": True, "min_time": None},   # 'SUITE CINEMA' (박스형 프라이빗 상영관)
 ]
 
 # ── 2순위: 메가박스 돌비 ──────────────────────────────────────────
@@ -130,7 +141,7 @@ UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit
 UA_DESKTOP = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
-TAGS = {"IMAX": "[IMAX]", "DBC": "[돌비 시네마]", "DVA": "[돌비 비전+애트모스]"}
+TAGS = {"IMAX": "[IMAX]", "DBC": "[돌비 시네마]", "DVA": "[돌비 비전+애트모스]", "PRIVATE": "[프라이빗 박스]"}
 
 session = requests.Session()
 
@@ -180,6 +191,14 @@ def pretty_date(iso: str) -> str:
     return f"{d.month}월 {d.day}일({WEEKDAY_KO[d.weekday()]})"
 
 
+def min_rule(theater: dict, date_iso: str) -> tuple[int, str]:
+    """그 날짜에 적용할 (기준 분, 표시용 라벨). 주말이면 (0, "") = 제한 없음."""
+    if WEEKEND_NO_TIME_LIMIT and date.fromisoformat(date_iso).weekday() >= 5:
+        return 0, ""
+    label = theater.get("min_time") or MIN_START_TIME
+    return time_to_minutes(label) or 0, label
+
+
 def esc(s: str) -> str:
     """텔레그램 HTML 모드용 이스케이프."""
     return html.escape(s or "", quote=True)
@@ -210,7 +229,18 @@ class Show:
 APOLLO_RE = re.compile(r"window\.__APOLLO_STATE__\s*=\s*(\{.*?\});\s*(?:window\.|</script>)", re.S)
 
 
+_NAVER_CACHE: dict = {}     # 한 번 체크하는 동안 같은 페이지를 두 번 받지 않도록 (영등포: IMAX + 프라이빗)
+
+
 def _naver_page(naver_id: str, date_iso: str) -> tuple[list[dict], set[str]]:
+    key = (naver_id, date_iso)
+    if key not in _NAVER_CACHE:
+        _NAVER_CACHE[key] = _naver_page_fetch(naver_id, date_iso)
+    movies, tabs = _NAVER_CACHE[key]
+    return list(movies), set(tabs)
+
+
+def _naver_page_fetch(naver_id: str, date_iso: str) -> tuple[list[dict], set[str]]:
     url = f"https://m.place.naver.com/theater/{naver_id}/movie?datefilter={date_iso}"
     r = session.get(url, timeout=25, headers={
         "User-Agent": UA_MOBILE,
@@ -244,9 +274,8 @@ def _naver_page(naver_id: str, date_iso: str) -> tuple[list[dict], set[str]]:
     return movies, tabs
 
 
-def check_cgv_imax(theater: dict, dates: list[str]) -> list[Show]:
-    min_label = theater.get("min_time") or MIN_START_TIME
-    min_mins = time_to_minutes(min_label)
+def check_cgv(theater: dict, dates: list[str], fmt: str = "IMAX") -> list[Show]:
+    """fmt="IMAX": 상영관 이름에 IMAX /  fmt="PRIVATE": 상영관 이름에 theater["hall_keyword"]"""
     want = set(dates)
 
     movies, _tabs = _naver_page(theater["naver_id"], dates[0])
@@ -265,8 +294,12 @@ def check_cgv_imax(theater: dict, dates: list[str]) -> list[Show]:
             continue
         for hall in mv.get("scheduleList") or []:
             hall_name = hall.get("theaterName") or ""
-            if "IMAX" not in hall_name.upper() and "아이맥스" not in hall_name:
+            if fmt == "IMAX":
+                if "IMAX" not in hall_name.upper() and "아이맥스" not in hall_name:
+                    continue
+            elif theater["hall_keyword"].upper() not in hall_name.upper():
                 continue
+            min_mins, min_label = min_rule(theater, mv["date"])
             for s in hall.get("schedule") or []:
                 start = s.get("rtime") or ""
                 mins = time_to_minutes(start)
@@ -277,7 +310,7 @@ def check_cgv_imax(theater: dict, dates: list[str]) -> list[Show]:
                 book_url = (f"https://cgv.co.kr/cnm/movieBook/cinema?siteNo={theater['site_no']}"
                             f"&scnYmd={mv['date'].replace('-', '')}")
                 link = s.get("ticketMobileUrl") or s.get("ticketPcUrl") or book_url
-                shows.append(Show("IMAX", theater["name"], mv["date"], start, name,
+                shows.append(Show(fmt, theater["name"], mv["date"], start, name,
                                   hall=hall_name, link=_safe_url(link), book_url=book_url,
                                   min_label=min_label))
     return shows
@@ -295,14 +328,13 @@ MEGABOX_API = "https://www.megabox.co.kr/on/oh/ohc/Brch/schedulePage.do"
 
 
 def check_megabox(theater: dict, dates: list[str]) -> list[Show]:
-    min_label = theater.get("min_time") or MIN_START_TIME
-    min_mins = time_to_minutes(min_label)
     brch = theater["brch_no"]
     today = datetime.now(KST).strftime("%Y%m%d")
     shows: list[Show] = []
     errors = []
 
     for d in dates:                       # 날짜별로도 독립 처리 (하루 실패해도 나머지 날짜 계속)
+        min_mins, min_label = min_rule(theater, d)
         try:
             body = {"masterType": "brch", "detailType": "area", "brchNo": brch, "brchNo1": brch,
                     "firstAt": "N", "crtDe": today, "playDe": d.replace("-", "")}
@@ -388,17 +420,18 @@ def build_message(group: list[Show], new_keys: set[str]) -> str:
         f"🎬 {esc(s0.movie)}",
         f"📍 <b>{esc(s0.theater)}</b>",
         f"📅 {esc(pretty_date(s0.date))}",
-        f"⏰ {esc(s0.min_label or MIN_START_TIME)} 이후 상영 시작 회차:",
+        (f"⏰ {esc(s0.min_label)} 이후 상영 시작 회차:" if s0.min_label
+         else "⏰ 예매 가능한 회차 (주말이라 시간 제한 없음):"),
     ]
     for s in sorted(group, key=lambda x: time_to_minutes(x.start) or 0):
         mark = "🆕 " if s.key in new_keys else "　 "
         extra = " · ".join(x for x in (s.hall, s.seats) if x)
         t = esc(display_time(s.start))
-        time_txt = f'<a href="{esc(s.link)}">{t}</a>' if s.fmt == "IMAX" else t
+        time_txt = f'<a href="{esc(s.link)}">{t}</a>' if s.fmt in ("IMAX", "PRIVATE") else t
         lines.append(f"{mark}{time_txt}" + (f"  <i>{esc(extra)}</i>" if extra else ""))
     lines.append("")
     lines.append(f'👉 <a href="{esc(s0.book_url or s0.link)}">바로 예매하러 가기</a>')
-    if s0.fmt == "IMAX":
+    if s0.fmt in ("IMAX", "PRIVATE"):
         lines.append("<i>(시간을 누르면 해당 회차 예매 화면으로 바로 이동)</i>")
     return "\n".join(lines)
 
@@ -435,6 +468,7 @@ def save_state(state: dict) -> None:
 def run_check(state: dict, fail_counter: dict) -> None:
     dates = target_dates()
     found: list[Show] = []
+    _NAVER_CACHE.clear()
 
     # ── 1순위: CGV IMAX ──  (지점마다 try/except → 한 곳이 에러여도 다음 지점 계속)
     imax_count = 0
@@ -443,11 +477,11 @@ def run_check(state: dict, fail_counter: dict) -> None:
             continue
         src = f"CGV:{th['name']}"
         try:
-            shows = check_cgv_imax(th, dates)
+            shows = check_cgv(th, dates, "IMAX")
             imax_count += len(shows)
             found += shows
             fail_counter[src] = 0
-            log(f" [IMAX] {th['name']}: 저녁 회차 {len(shows)}개")
+            log(f" [IMAX] {th['name']}: 조건 맞는 회차 {len(shows)}개")
         except Exception as e:  # noqa: BLE001
             fail_counter[src] = fail_counter.get(src, 0) + 1
             log(f" [IMAX] {th['name']}: 조회 실패 → {type(e).__name__}: {e}")
@@ -465,10 +499,25 @@ def run_check(state: dict, fail_counter: dict) -> None:
             shows = check_megabox(th, dates)
             found += shows
             fail_counter[src] = 0
-            log(f" [돌비] {th['name']}: 저녁 회차 {len(shows)}개")
+            log(f" [돌비] {th['name']}: 조건 맞는 회차 {len(shows)}개")
         except Exception as e:  # noqa: BLE001
             fail_counter[src] = fail_counter.get(src, 0) + 1
             log(f" [돌비] {th['name']}: 조회 실패 → {type(e).__name__}: {e}")
+
+    # ── 3: CGV 프라이빗 박스 ──  (위 결과와 무관하게 항상 실행)
+    for th in CGV_PRIVATE_THEATERS:
+        if not th.get("enabled", True):
+            continue
+        src = f"CGV-PRIVATE:{th['name']}"
+        try:
+            shows = check_cgv(th, dates, "PRIVATE")
+            found += shows
+            fail_counter[src] = 0
+            log(f" [프라이빗] {th['name']}: 조건 맞는 회차 {len(shows)}개")
+        except Exception as e:  # noqa: BLE001
+            fail_counter[src] = fail_counter.get(src, 0) + 1
+            log(f" [프라이빗] {th['name']}: 조회 실패 → {type(e).__name__}: {e}")
+        time.sleep(REQUEST_DELAY)
 
     # ── 새 회차만 골라 알림 ──
     sent = state["sent"]
@@ -479,7 +528,7 @@ def run_check(state: dict, fail_counter: dict) -> None:
     new_keys = {s.key for s in new}
 
     # [포맷+지점+날짜] 단위로 묶어서 메시지 1개씩 (IMAX 먼저)
-    order = {"IMAX": 0, "DBC": 1, "DVA": 2}
+    order = {"IMAX": 0, "DBC": 1, "DVA": 2, "PRIVATE": 3}
     groups: dict[tuple, list[Show]] = {}
     for s in found:
         groups.setdefault((s.fmt, s.theater, s.date), []).append(s)

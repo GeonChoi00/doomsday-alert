@@ -88,8 +88,10 @@ MEGABOX_THEATERS = [
 ]
 
 # ── 실행 방식 ─────────────────────────────────────────────────────
-LOOP_SECONDS = 200        # 한 번 실행될 때 몇 초 동안 반복 체크할지 (0 = 딱 한 번만 체크)
-CHECK_INTERVAL = 100      # 반복 체크 간격(초).  200/100 이면 0초·100초·200초에 총 3번 체크
+LOOP_SECONDS = 150        # 한 번 실행될 때 몇 초 동안 반복 체크할지 (0 = 딱 한 번만 체크)
+CHECK_INTERVAL = 150      # 반복 체크 간격(초).  150/150 이면 0초·150초에 총 2번 체크
+                          # (너무 자주 요청하면 네이버가 429로 잠깐 막아서 2번으로 줄임)
+FAIL_ALERT_MINUTES = 60   # 한 지점이 이 시간(분) 동안 계속 조회 실패할 때만 ⚠️ 경고 (잠깐 막힌 건 무시)
 REQUEST_DELAY = 0.7       # 요청 사이 쉬는 시간(초) ― 사이트에 부담 안 주기
 STATE_FILE = "sent_state.json"   # 알림 보낸 기록 (중복 알림 방지)
 
@@ -240,14 +242,27 @@ def _naver_page(naver_id: str, date_iso: str) -> tuple[list[dict], set[str]]:
     return list(movies), set(tabs)
 
 
+_NAVER_THROTTLED = {"on": False}   # 이번 체크에서 네이버가 429로 막았으면 나머지 네이버 요청은 건너뜀
+
+
 def _naver_page_fetch(naver_id: str, date_iso: str) -> tuple[list[dict], set[str]]:
+    if _NAVER_THROTTLED["on"]:
+        raise RuntimeError("네이버 요청 제한(429) 중 → 이번 체크는 건너뜀, 다음 체크에 다시 시도")
     url = f"https://m.place.naver.com/theater/{naver_id}/movie?datefilter={date_iso}"
-    r = session.get(url, timeout=25, headers={
-        "User-Agent": UA_MOBILE,
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-        "Referer": "https://m.place.naver.com/",
-    })
+    for attempt in range(2):           # 429(요청 너무 많음)/5xx면 20초 쉬고 한 번 더
+        r = session.get(url, timeout=25, headers={
+            "User-Agent": UA_MOBILE,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+            "Referer": "https://m.place.naver.com/",
+        })
+        if r.status_code == 429 or r.status_code >= 500:
+            if attempt == 0:
+                time.sleep(20)
+                continue
+            if r.status_code == 429:
+                _NAVER_THROTTLED["on"] = True
+        break
     r.raise_for_status()
     r.encoding = "utf-8"          # 네이버는 charset을 안 알려줘서 한글이 깨질 수 있음 → 강제 지정
     m = APOLLO_RE.search(r.text)
@@ -441,14 +456,15 @@ def build_message(group: list[Show], new_keys: set[str]) -> str:
 # ────────────────────────────────────────────────────────────────────
 def load_state() -> dict:
     if NO_STATE:
-        return {"sent": {}, "alerts": {}}
+        return {"sent": {}, "fail_since": {}}
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
             st = json.load(f)
     except (OSError, ValueError):
         st = {}
     st.setdefault("sent", {})
-    st.setdefault("alerts", {})
+    st.setdefault("fail_since", {})
+    st.pop("alerts", None)          # 예전 방식 경고 기록은 더 이상 안 씀
     return st
 
 
@@ -465,10 +481,11 @@ def save_state(state: dict) -> None:
 # ────────────────────────────────────────────────────────────────────
 # 한 번 체크
 # ────────────────────────────────────────────────────────────────────
-def run_check(state: dict, fail_counter: dict) -> None:
+def run_check(state: dict) -> None:
     dates = target_dates()
     found: list[Show] = []
     _NAVER_CACHE.clear()
+    _NAVER_THROTTLED["on"] = False
 
     # ── 1순위: CGV IMAX ──  (지점마다 try/except → 한 곳이 에러여도 다음 지점 계속)
     imax_count = 0
@@ -480,10 +497,10 @@ def run_check(state: dict, fail_counter: dict) -> None:
             shows = check_cgv(th, dates, "IMAX")
             imax_count += len(shows)
             found += shows
-            fail_counter[src] = 0
+            source_ok(state, src)
             log(f" [IMAX] {th['name']}: 조건 맞는 회차 {len(shows)}개")
         except Exception as e:  # noqa: BLE001
-            fail_counter[src] = fail_counter.get(src, 0) + 1
+            source_failed(state, src)
             log(f" [IMAX] {th['name']}: 조회 실패 → {type(e).__name__}: {e}")
         time.sleep(REQUEST_DELAY)
 
@@ -498,10 +515,10 @@ def run_check(state: dict, fail_counter: dict) -> None:
         try:
             shows = check_megabox(th, dates)
             found += shows
-            fail_counter[src] = 0
+            source_ok(state, src)
             log(f" [돌비] {th['name']}: 조건 맞는 회차 {len(shows)}개")
         except Exception as e:  # noqa: BLE001
-            fail_counter[src] = fail_counter.get(src, 0) + 1
+            source_failed(state, src)
             log(f" [돌비] {th['name']}: 조회 실패 → {type(e).__name__}: {e}")
 
     # ── 3: CGV 프라이빗 박스 ──  (위 결과와 무관하게 항상 실행)
@@ -512,10 +529,10 @@ def run_check(state: dict, fail_counter: dict) -> None:
         try:
             shows = check_cgv(th, dates, "PRIVATE")
             found += shows
-            fail_counter[src] = 0
+            source_ok(state, src)
             log(f" [프라이빗] {th['name']}: 조건 맞는 회차 {len(shows)}개")
         except Exception as e:  # noqa: BLE001
-            fail_counter[src] = fail_counter.get(src, 0) + 1
+            source_failed(state, src)
             log(f" [프라이빗] {th['name']}: 조회 실패 → {type(e).__name__}: {e}")
         time.sleep(REQUEST_DELAY)
 
@@ -545,20 +562,31 @@ def run_check(state: dict, fail_counter: dict) -> None:
             log(f" 📨 알림 전송: {gk}")
 
 
-def alert_failures(state: dict, fail_counter: dict, checks: int) -> None:
-    """이번 실행의 모든 체크에서 계속 실패한 소스가 있으면 하루 1번만 경고."""
-    if checks == 0:
-        return
-    today = datetime.now(KST).date().isoformat()
-    broken = [src for src, n in fail_counter.items() if n >= checks]
-    for src in broken:
-        k = f"{src}|{today}"
-        if k in state["alerts"]:
+def source_failed(state: dict, src: str) -> None:
+    """실패 시작 시각만 기록 (처음 실패할 때 한 번)."""
+    state["fail_since"].setdefault(src, {"since": datetime.now(KST).isoformat(timespec="seconds"),
+                                         "alerted": False})
+
+
+def source_ok(state: dict, src: str) -> None:
+    """성공하면 실패 기록 삭제. 경고를 보냈던 지점이면 '복구됨' 알림."""
+    info = state["fail_since"].pop(src, None)
+    if info and info.get("alerted"):
+        send_telegram(f"✅ <b>복구됨</b>\n{esc(src)} 조회가 다시 정상이에요.")
+
+
+def alert_failures(state: dict) -> None:
+    """FAIL_ALERT_MINUTES 이상 계속 실패 중인 지점만, 실패 1건당 경고 1번."""
+    now = datetime.now(KST)
+    for src, info in state["fail_since"].items():
+        if info.get("alerted"):
             continue
-        if send_telegram(f"⚠️ <b>조회 오류</b>\n{esc(src)} 조회가 계속 실패하고 있어요.\n"
-                         f"GitHub Actions 로그를 확인해 주세요. (다른 지점 감시는 계속 진행 중)"):
-            state["alerts"][k] = datetime.now(KST).isoformat(timespec="seconds")
-            save_state(state)
+        mins = (now - datetime.fromisoformat(info["since"])).total_seconds() / 60
+        if mins < FAIL_ALERT_MINUTES:
+            continue
+        if send_telegram(f"⚠️ <b>조회 오류</b>\n{esc(src)} 조회가 {int(mins)}분째 실패하고 있어요.\n"
+                         f"(다른 지점 감시는 계속 진행 중 · 복구되면 ✅ 알림이 와요)"):
+            info["alerted"] = True
 
 
 def main() -> int:
@@ -573,14 +601,13 @@ def main() -> int:
     log(f"감시 시작: {MOVIE_KEYWORDS} / {DATE_START}~{DATE_END} / {MIN_START_TIME} 이후"
         f"{' / DRY_RUN' if DRY_RUN else ''}{' / NO_STATE' if NO_STATE else ''}")
     state = load_state()
-    fail_counter: dict[str, int] = {}
     started = time.monotonic()
     checks = 0
     while True:
         checks += 1
         log(f"── 체크 #{checks} ──")
         try:
-            run_check(state, fail_counter)
+            run_check(state)
         except Exception as e:  # noqa: BLE001  (예상 못한 에러도 다음 체크는 계속)
             log(f"체크 중 예외: {type(e).__name__}: {e}")
         elapsed = time.monotonic() - started
@@ -588,7 +615,7 @@ def main() -> int:
             break
         time.sleep(CHECK_INTERVAL)
 
-    alert_failures(state, fail_counter, checks)
+    alert_failures(state)
     save_state(state)
     log("완료")
     return 0

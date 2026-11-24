@@ -57,7 +57,7 @@ jobs:
           DATE_END: ${{ inputs.test_date_end }}
           # 테스트 키워드로 돌릴 때는 기록 파일을 건드리지 않고(NO_STATE), 한 번만 체크
           NO_STATE: ${{ inputs.test_keyword != '' && '1' || '0' }}
-          LOOP_SECONDS: ${{ inputs.test_keyword != '' && '0' || '200' }}
+          LOOP_SECONDS: ${{ inputs.test_keyword != '' && '0' || '150' }}
         run: python check_tickets.py
 
       - name: 알림 기록 저장 (변경 있을 때만 커밋)

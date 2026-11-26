@@ -1,9 +1,4 @@
 {
-  "fail_since": {
-    "CGV:CGV 왕십리": {
-      "alerted": false,
-      "since": "2026-11-26T17:28:29+09:00"
-    }
-  },
+  "fail_since": {},
   "sent": {}
 }

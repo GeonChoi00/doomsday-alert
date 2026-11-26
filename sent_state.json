@@ -1,4 +1,33 @@
 {
-  "fail_since": {},
+  "fail_since": {
+    "CGV-PRIVATE:CGV 연남": {
+      "alerted": false,
+      "since": "2026-11-26T09:24:38+09:00"
+    },
+    "CGV-PRIVATE:CGV 영등포": {
+      "alerted": false,
+      "since": "2026-11-26T09:24:37+09:00"
+    },
+    "CGV:CGV 압구정": {
+      "alerted": false,
+      "since": "2026-11-26T09:24:05+09:00"
+    },
+    "CGV:CGV 영등포": {
+      "alerted": false,
+      "since": "2026-11-26T09:24:07+09:00"
+    },
+    "CGV:CGV 왕십리": {
+      "alerted": false,
+      "since": "2026-11-26T09:24:04+09:00"
+    },
+    "CGV:CGV 용산아이파크몰": {
+      "alerted": false,
+      "since": "2026-11-26T09:24:05+09:00"
+    },
+    "CGV:CGV 천호": {
+      "alerted": false,
+      "since": "2026-11-26T09:24:06+09:00"
+    }
+  },
   "sent": {}
 }

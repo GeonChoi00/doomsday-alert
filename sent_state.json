@@ -1,4 +1,9 @@
 {
-  "fail_since": {},
+  "fail_since": {
+    "CGV-PRIVATE:CGV 연남": {
+      "alerted": false,
+      "since": "2026-11-26T11:39:05+09:00"
+    }
+  },
   "sent": {}
 }

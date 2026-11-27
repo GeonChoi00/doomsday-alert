@@ -1,13 +1,4 @@
 {
-  "fail_since": {
-    "CGV-PRIVATE:CGV 영등포": {
-      "alerted": false,
-      "since": "2026-11-28T04:04:36+09:00"
-    },
-    "CGV:CGV 영등포": {
-      "alerted": false,
-      "since": "2026-11-28T04:03:59+09:00"
-    }
-  },
+  "fail_since": {},
   "sent": {}
 }
